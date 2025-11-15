@@ -1,0 +1,150 @@
+name: Build yt-dlp (x86 / i386) - Nuitka optimized
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-amd64:
+    name: Build (amd64) - Nuitka
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev zlib1g-dev liblzma-dev
+
+      - name: Install Python deps & Nuitka
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "nuitka>=1.8" wheel
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt || true; fi
+
+      - name: Build package (install editable)
+        run: |
+          python -m pip install .
+
+      - name: Build native binary with Nuitka (optimized)
+        env:
+          MAKEFLAGS: -j${{ runner.cores }}
+        run: |
+          # --standalone daje samodzielny katalog z binarką; --lto i --jobs przyspieszają i optymalizują
+          python -m nuitka \
+            --standalone \
+            --follow-imports \
+            --enable-plugin=multiprocessing \
+            --lto=yes \
+            --jobs=$(nproc) \
+            --remove-output \
+            --output-dir=dist_build \
+            yt_dlp/__main__.py
+
+          # znajdź i skopiuj wynikowy binarny plik (ścieżka zależna od Nuitka layout)
+          mkdir -p dist
+          # próbujemy znaleźć plik wykonywalny w katalogu stworzonej standalone paczki
+          BIN=$(find dist_build -type f -executable -name 'yt_dlp' -print -quit || true)
+          if [ -z "$BIN" ]; then
+            # noen: try different name
+            BIN=$(find dist_build -type f -executable -name 'yt-dlp' -print -quit || true)
+          fi
+          if [ -n "$BIN" ]; then
+            cp "$BIN" ./dist/yt-dlp-amd64
+            strip ./dist/yt-dlp-amd64 || true
+            chmod +x ./dist/yt-dlp-amd64
+          else
+            echo "ERROR: couldn't find built binary in dist_build"
+            ls -la dist_build || true
+            exit 1
+          fi
+
+      - name: Smoke test executable
+        run: |
+          ./dist/yt-dlp-amd64 --version
+
+      - name: Upload amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt-dlp-amd64
+          path: dist/yt-dlp-amd64
+
+  build-i386:
+    name: Build (i386) - Nuitka in i386 container
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup QEMU (enable running i386 containers)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Prepare host pip cache for passing to container
+        # cache pip wheels to speed up in-container pip installs
+        run: |
+          mkdir -p .pip-wheelhouse
+          if [ -f requirements.txt ]; then python -m pip download -r requirements.txt -d .pip-wheelhouse || true; fi
+
+      - name: Build inside i386 Python container
+        run: |
+          mkdir -p dist
+          docker run --rm --platform linux/386 -v "${{ github.workspace }}":/src -v "${{ github.workspace }}/.pip-wheelhouse":/wheelhouse -w /src python:3.11-slim-bullseye bash -eux -c "
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev zlib1g-dev liblzma-dev ca-certificates
+            python -m pip install --upgrade pip setuptools wheel
+            # use wheelhouse to speed up installs if available
+            if [ -d /wheelhouse ] && [ \"\$(ls -A /wheelhouse)\" ]; then
+              pip install --no-index --find-links=/wheelhouse -r requirements.txt || true
+            else
+              if [ -f requirements.txt ]; then python -m pip install -r requirements.txt || true; fi
+            fi
+            python -m pip install \"nuitka>=1.8\" wheel
+            python -m pip install .
+            python -m nuitka \
+              --standalone \
+              --follow-imports \
+              --lto=yes \
+              --jobs=$(nproc) \
+              --remove-output \
+              --output-dir=dist_build \
+              yt_dlp/__main__.py
+            # copy produced binary back to host workspace
+            BIN=\$(find dist_build -type f -executable -name 'yt_dlp' -print -quit || true)
+            if [ -z \"\$BIN\" ]; then
+              BIN=\$(find dist_build -type f -executable -name 'yt-dlp' -print -quit || true)
+            fi
+            if [ -n \"\$BIN\" ]; then
+              cp \"\$BIN\" /src/dist/yt-dlp-i386 || exit 1
+              chown $(id -u):$(id -g) /src/dist/yt-dlp-i386
+            else
+              echo 'ERROR: i386 binary not found'
+              ls -la dist_build || true
+              exit 1
+            fi
+          "
+
+      - name: Smoke test i386 executable (inside i386 container)
+        run: |
+          docker run --rm --platform linux/386 -v "${{ github.workspace }}/dist":/dist -w /dist python:3.11-slim-bullseye bash -c "./yt-dlp-i386 --version"
+
+      - name: Upload i386 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt-dlp-i386
+          path: dist/yt-dlp-i386
