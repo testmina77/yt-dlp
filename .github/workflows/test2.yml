@@ -107,6 +107,7 @@ jobs:
           docker run --rm --platform linux/386 -v "${{ github.workspace }}":/src -v "${{ github.workspace }}/.pip-wheelhouse":/wheelhouse -w /src python:3.11-slim-bullseye bash -eux -c "
             apt-get update
             apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev zlib1g-dev liblzma-dev ca-certificates
+            apt-get install -y patchelf
             python -m pip install --upgrade pip setuptools wheel
             # use wheelhouse to speed up installs if available
             if [ -d /wheelhouse ] && [ \"\$(ls -A /wheelhouse)\" ]; then
