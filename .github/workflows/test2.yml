@@ -29,7 +29,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev zlib1g-dev liblzma-dev
+          sudo apt-get install -y build-essential pkg-config libssl-dev zlib1g-dev liblzma-dev patchelf
 
       - name: Install Python deps & Nuitka
         run: |
